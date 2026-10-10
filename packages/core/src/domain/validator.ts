@@ -1,5 +1,11 @@
-import type { ArchitectureEdge, ArchitectureNode, RoomSnapshot } from "./snapshot.ts";
+import {
+  ArchitectureEdgeSchema,
+  ArchitectureNodeSchema,
+  type ArchitectureEdge,
+  type ArchitectureNode,
+} from "./snapshot.ts";
 import type { Operation } from "./operations.ts";
+import { PropertiesSchema } from "./limits.ts";
 
 export type ValidationResult = {
   valid: boolean;
@@ -14,7 +20,7 @@ export function validateGraph(snapshot: {
   const nodeMap = new Map<string, ArchitectureNode>();
   const edgeMap = new Map<string, ArchitectureEdge>();
 
-  // 1. Unique Node IDs & Finite Geometry
+  // 1. Unique Node IDs, Finite Geometry, and Properties Validation
   for (const node of snapshot.nodes) {
     if (nodeMap.has(node.id)) {
       errors.push(`Duplicate node ID: '${node.id}'`);
@@ -29,34 +35,45 @@ export function validateGraph(snapshot: {
     if (width <= 0 || height <= 0) {
       errors.push(`Node '${node.id}' has non-positive dimensions: width=${width}, height=${height}`);
     }
+
+    const propsResult = PropertiesSchema.safeParse(node.properties);
+    if (!propsResult.success) {
+      errors.push(`Node '${node.id}' has invalid properties: ${propsResult.error.message}`);
+    }
   }
 
-  // 2. Boundary Validity & Cycle Detection
+  // 2. Boundary Validity & Cycle Detection (Distinguishing absent vs empty string)
   for (const node of snapshot.nodes) {
-    if (node.boundaryId) {
-      const boundaryNode = nodeMap.get(node.boundaryId);
-      if (!boundaryNode) {
-        errors.push(`Node '${node.id}' references non-existent boundaryId '${node.boundaryId}'`);
-      } else if (boundaryNode.kind !== "boundary") {
-        errors.push(`Node '${node.id}' references boundaryId '${node.boundaryId}' which has kind '${boundaryNode.kind}' instead of 'boundary'`);
-      }
-
-      // Check boundary containment cycle
-      let currentId: string | undefined = node.boundaryId;
-      const visited = new Set<string>([node.id]);
-      while (currentId) {
-        if (visited.has(currentId)) {
-          errors.push(`Boundary containment cycle detected involving node '${node.id}' and boundary '${currentId}'`);
-          break;
+    if (node.boundaryId !== undefined) {
+      if (node.boundaryId === "") {
+        errors.push(`Node '${node.id}' has empty string boundaryId`);
+      } else {
+        const boundaryNode = nodeMap.get(node.boundaryId);
+        if (!boundaryNode) {
+          errors.push(`Node '${node.id}' references non-existent boundaryId '${node.boundaryId}'`);
+        } else if (boundaryNode.kind !== "boundary") {
+          errors.push(
+            `Node '${node.id}' references boundaryId '${node.boundaryId}' which has kind '${boundaryNode.kind}' instead of 'boundary'`
+          );
         }
-        visited.add(currentId);
-        const parent = nodeMap.get(currentId);
-        currentId = parent?.boundaryId;
+
+        // Check boundary containment cycle
+        let currentId: string | undefined = node.boundaryId;
+        const visited = new Set<string>([node.id]);
+        while (currentId) {
+          if (visited.has(currentId)) {
+            errors.push(`Boundary containment cycle detected involving node '${node.id}' and boundary '${currentId}'`);
+            break;
+          }
+          visited.add(currentId);
+          const parent = nodeMap.get(currentId);
+          currentId = parent?.boundaryId;
+        }
       }
     }
   }
 
-  // 3. Unique Edge IDs & Endpoint Existence
+  // 3. Unique Edge IDs, Endpoint Existence, and Properties Validation
   for (const edge of snapshot.edges) {
     if (edgeMap.has(edge.id)) {
       errors.push(`Duplicate edge ID: '${edge.id}'`);
@@ -69,6 +86,11 @@ export function validateGraph(snapshot: {
     }
     if (!nodeMap.has(edge.to)) {
       errors.push(`Edge '${edge.id}' has dangling 'to' endpoint '${edge.to}'`);
+    }
+
+    const propsResult = PropertiesSchema.safeParse(edge.properties);
+    if (!propsResult.success) {
+      errors.push(`Edge '${edge.id}' has invalid properties: ${propsResult.error.message}`);
     }
   }
 
@@ -89,9 +111,29 @@ export function simulateOperations(
   initial: { nodes: ArchitectureNode[]; edges: ArchitectureEdge[] },
   operations: Operation[]
 ): SimulationResult {
+  // Fix 6: Validate the initial graph BEFORE creating maps or modifying entities
+  const initialValidation = validateGraph(initial);
+  if (!initialValidation.valid) {
+    return {
+      success: false,
+      errors: initialValidation.errors,
+    };
+  }
+
   const errors: string[] = [];
-  const nodes = new Map<string, ArchitectureNode>(initial.nodes.map((n) => [n.id, { ...n, layout: { ...n.layout }, properties: { ...n.properties } }]));
-  const edges = new Map<string, ArchitectureEdge>(initial.edges.map((e) => [e.id, { ...e, properties: { ...e.properties } }]));
+  // Deep clone to guarantee initial entities are untouched
+  const nodes = new Map<string, ArchitectureNode>(
+    initial.nodes.map((n) => [
+      n.id,
+      { ...n, layout: { ...n.layout }, properties: { ...n.properties } },
+    ])
+  );
+  const edges = new Map<string, ArchitectureEdge>(
+    initial.edges.map((e) => [
+      e.id,
+      { ...e, properties: { ...e.properties } },
+    ])
+  );
 
   // Track which edges are removed in this batch
   const removedEdgeIds = new Set<string>();
@@ -110,7 +152,16 @@ export function simulateOperations(
         if (nodes.has(op.node.id)) {
           errors.push(`Operation ${i} (add_node): Node '${op.node.id}' already exists`);
         } else {
-          nodes.set(op.node.id, { ...op.node, layout: { ...op.node.layout }, properties: { ...op.node.properties } });
+          const parsed = ArchitectureNodeSchema.safeParse(op.node);
+          if (!parsed.success) {
+            errors.push(`Operation ${i} (add_node): Invalid node schema: ${parsed.error.message}`);
+          } else {
+            nodes.set(op.node.id, {
+              ...op.node,
+              layout: { ...op.node.layout },
+              properties: { ...op.node.properties },
+            });
+          }
         }
         break;
       }
@@ -120,14 +171,41 @@ export function simulateOperations(
         if (!existing) {
           errors.push(`Operation ${i} (update_node): Node '${op.id}' does not exist`);
         } else {
-          nodes.set(op.id, {
+          // Check merged properties
+          let mergedProperties = existing.properties;
+          if (op.changes.properties !== undefined) {
+            mergedProperties = { ...existing.properties, ...op.changes.properties };
+            const propsValidation = PropertiesSchema.safeParse(mergedProperties);
+            if (!propsValidation.success) {
+              errors.push(
+                `Operation ${i} (update_node): Merged properties violate schema: ${propsValidation.error.message}`
+              );
+            }
+          }
+
+          // Handle boundaryId: null clears, string assigns, undefined leaves unchanged
+          let newBoundaryId: string | undefined = existing.boundaryId;
+          if (op.changes.boundaryId === null) {
+            newBoundaryId = undefined;
+          } else if (op.changes.boundaryId !== undefined) {
+            newBoundaryId = op.changes.boundaryId;
+          }
+
+          const updatedNode: ArchitectureNode = {
             ...existing,
             ...(op.changes.label !== undefined ? { label: op.changes.label } : {}),
             ...(op.changes.description !== undefined ? { description: op.changes.description } : {}),
             ...(op.changes.kind !== undefined ? { kind: op.changes.kind } : {}),
-            ...(op.changes.boundaryId !== undefined ? { boundaryId: op.changes.boundaryId ?? undefined } : {}),
-            ...(op.changes.properties !== undefined ? { properties: { ...existing.properties, ...op.changes.properties } } : {}),
-          });
+            boundaryId: newBoundaryId,
+            properties: mergedProperties,
+          };
+
+          const nodeValidation = ArchitectureNodeSchema.safeParse(updatedNode);
+          if (!nodeValidation.success) {
+            errors.push(`Operation ${i} (update_node): Resulting node violates schema: ${nodeValidation.error.message}`);
+          } else {
+            nodes.set(op.id, updatedNode);
+          }
         }
         break;
       }
@@ -137,10 +215,16 @@ export function simulateOperations(
         if (!existing) {
           errors.push(`Operation ${i} (move_node): Node '${op.id}' does not exist`);
         } else {
-          nodes.set(op.id, {
+          const updatedNode: ArchitectureNode = {
             ...existing,
             layout: { ...op.layout },
-          });
+          };
+          const nodeValidation = ArchitectureNodeSchema.safeParse(updatedNode);
+          if (!nodeValidation.success) {
+            errors.push(`Operation ${i} (move_node): Resulting node violates layout schema: ${nodeValidation.error.message}`);
+          } else {
+            nodes.set(op.id, updatedNode);
+          }
         }
         break;
       }
@@ -167,7 +251,15 @@ export function simulateOperations(
         if (edges.has(op.edge.id)) {
           errors.push(`Operation ${i} (add_edge): Edge '${op.edge.id}' already exists`);
         } else {
-          edges.set(op.edge.id, { ...op.edge, properties: { ...op.edge.properties } });
+          const parsed = ArchitectureEdgeSchema.safeParse(op.edge);
+          if (!parsed.success) {
+            errors.push(`Operation ${i} (add_edge): Invalid edge schema: ${parsed.error.message}`);
+          } else {
+            edges.set(op.edge.id, {
+              ...op.edge,
+              properties: { ...op.edge.properties },
+            });
+          }
         }
         break;
       }
@@ -177,14 +269,32 @@ export function simulateOperations(
         if (!existing) {
           errors.push(`Operation ${i} (update_edge): Edge '${op.id}' does not exist`);
         } else {
-          edges.set(op.id, {
+          let mergedProperties = existing.properties;
+          if (op.changes.properties !== undefined) {
+            mergedProperties = { ...existing.properties, ...op.changes.properties };
+            const propsValidation = PropertiesSchema.safeParse(mergedProperties);
+            if (!propsValidation.success) {
+              errors.push(
+                `Operation ${i} (update_edge): Merged properties violate schema: ${propsValidation.error.message}`
+              );
+            }
+          }
+
+          const updatedEdge: ArchitectureEdge = {
             ...existing,
             ...(op.changes.label !== undefined ? { label: op.changes.label } : {}),
             ...(op.changes.kind !== undefined ? { kind: op.changes.kind } : {}),
             ...(op.changes.protocol !== undefined ? { protocol: op.changes.protocol } : {}),
             ...(op.changes.mode !== undefined ? { mode: op.changes.mode } : {}),
-            ...(op.changes.properties !== undefined ? { properties: { ...existing.properties, ...op.changes.properties } } : {}),
-          });
+            properties: mergedProperties,
+          };
+
+          const edgeValidation = ArchitectureEdgeSchema.safeParse(updatedEdge);
+          if (!edgeValidation.success) {
+            errors.push(`Operation ${i} (update_edge): Resulting edge violates schema: ${edgeValidation.error.message}`);
+          } else {
+            edges.set(op.id, updatedEdge);
+          }
         }
         break;
       }
@@ -207,7 +317,7 @@ export function simulateOperations(
   const resultingNodes = Array.from(nodes.values());
   const resultingEdges = Array.from(edges.values());
 
-  // Validate resulting graph invariants
+  // Final graph validation on the resulting state
   const graphValidation = validateGraph({ nodes: resultingNodes, edges: resultingEdges });
   if (!graphValidation.valid) {
     return {

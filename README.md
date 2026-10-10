@@ -31,7 +31,7 @@ Always available means the buddy can join whenever the developer works and recov
 
 Build the harness as a separate product, with a stable versioned request/response contract. Keep its core independent of Liveblocks and the connector/MCP transport so it can be developed and evaluated using recorded events before integration.
 
-These are design recommendations, not an implemented or benchmarked system. There is no application code yet.
+These are design recommendations and implemented core foundation contracts (`packages/core`). The pure domain models, graph validation, and proposal digest slice are implemented and tested locally.
 
 ## Design and build plan
 

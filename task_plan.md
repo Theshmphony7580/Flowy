@@ -20,16 +20,18 @@ Phase 1: Setup & Project Scaffolding
 - **Status:** complete
 
 ### Phase 2: Milestone C0 — Contracts & Pure Validation
-- [x] Define canonical schemas in `packages/core/src/domain/`:
-  - `GraphSnapshot`, `ArchitectureNode`, `ArchitectureEdge`, `Coverage`, `ConfirmedBrief`
-  - `CoreEvent` union
-  - `AnalyzeRequest` and `AnalyzeResponse` wire contracts
-  - `Operation` typed command union (`add_node`, `update_node`, `move_node`, etc.)
-  - `Proposal` schema with preconditions and metadata
-- [x] Implement pure graph validator (`validateGraph`) with boundary cycle detection and incident edge checks
-- [x] Implement deterministic SHA-256 proposal digest utility (`computeProposalDigest`)
-- [x] Add unit test suite in `packages/core/test/domain.test.ts`
-- **Status:** in_progress (awaiting test run by user)
+- [x] Define canonical schemas in `packages/core/src/domain/` with limits and strictness
+- [x] Applied Fix 1: Remove invalid, unused `RoomSnapshot` import in `validator.ts`
+- [x] Applied Fix 2: Set `rootDir: "."` in `packages/core/tsconfig.json` to include tests
+- [x] Applied Fix 3: Proposal digest stability across JSON transport (`digest.ts` omits undefined, sorts keys, preserves array order and null)
+- [x] Applied Fix 4: Reject empty string boundary IDs in `operations.ts` and `validator.ts`
+- [x] Applied Fix 5: Strictness on all operations, nested objects, and reject empty updates
+- [x] Applied Fix 6: Initial graph validation in `simulateOperations` before building maps
+- [x] Applied Fix 7: Bounded inputs, properties schema, and 1 MiB aggregate JSON UTF-8 byte budget (`limits.ts`)
+- [x] Applied Fix 8: Explicit `Claim` model preserving provenance and confirmation status (`brief.ts`)
+- [x] Updated comprehensive regression test suite in `packages/core/test/domain.test.ts`
+- [x] Updated `README.md` to accurately reflect C0 implementation state
+- **Status:** in_progress (all 8 fixes applied; awaiting user verification commands)
 
 
 ### Phase 3: Milestone C1 — Observation & Context Engine
